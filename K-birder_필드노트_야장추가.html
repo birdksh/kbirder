@@ -1069,12 +1069,47 @@
   }
 
   /* ---------------- 종마스터: 관찰횟수 집계 불러오기 (서버에서 미리 더해서 보내주므로 빠름) ---------------- */
+  // 속도 개선: 지난번에 받아 둔 집계를 이 기기에 저장해 두고, 열자마자 먼저 보여준 뒤
+  // 뒤에서 조용히 최신으로 갱신한다(저장본이 없을 때만 "불러오는 중"이 뜬다).
+  function cacheGet(key){
+    try{
+      var raw = localStorage.getItem(key); if(!raw) return null;
+      var d = JSON.parse(raw);
+      if(!d || d.url !== state.scriptUrl) return null;
+      return d.data;
+    }catch(e){ return null; }
+  }
+  function cacheSet(key, data){
+    try{ localStorage.setItem(key, JSON.stringify({url: state.scriptUrl, t: Date.now(), data: data})); }catch(e){}
+  }
+  function applyObsCounts(res){
+    var dom = {}, seas = {};
+    Object.keys(res).forEach(function(kr){
+      dom[kr] = (res[kr] && res[kr].domestic) || 0;
+      seas[kr] = (res[kr] && res[kr].overseas) || 0;
+    });
+    state.obsCounts = {dom: dom, seas: seas};
+    state.obsFlatLoaded = true;
+    state.obsFlatError = null;
+  }
+
   async function loadAllObservations(forceFresh){
     if(!state.scriptUrl){ renderSpecies(); return; }
+    var cached = (forceFresh === true) ? null : cacheGet('kbirder_obs_counts_v1');
+    if(cached){
+      applyObsCounts(cached);
+      renderSpecies();
+      try{
+        var res0 = await callScriptGet('obs_counts');
+        if(res0 && !res0.error){ cacheSet('kbirder_obs_counts_v1', res0); applyObsCounts(res0); renderSpecies(); }
+      }catch(e){ /* 저장본을 이미 보여줬으니 조용히 넘어감 */ }
+      return;
+    }
     el('sp-table-wrap').innerHTML = '<div class="empty-state"><div class="glyph">⏳</div><h3>관찰횟수 불러오는 중…</h3></div>';
     try{
-      var res = await callScriptGet(forceFresh ? 'obs_counts&fresh=1' : 'obs_counts');
+      var res = await callScriptGet(forceFresh === true ? 'obs_counts&fresh=1' : 'obs_counts');
       if(res.error) throw new Error(res.error);
+      cacheSet('kbirder_obs_counts_v1', res);
       // 서버는 {"국명":{domestic:N, overseas:N}, ...} 형태로 내려줌 → dom/seas 맵으로 변환
       var dom = {}, seas = {};
       Object.keys(res).forEach(function(kr){
@@ -1093,15 +1128,36 @@
   }
 
   /* ---------------- 타인관찰: 전체 불러오기 (읽기 전용) ---------------- */
-  async function loadOtherObservations(){
+  async function loadOtherObservations(force){
     if(!state.scriptUrl){
       el('other-table-wrap').innerHTML = '<div class="empty-state"><div class="glyph">⚠️</div><h3>먼저 ⚙ 설정에서 구글시트를 연결해주세요</h3></div>';
+      return;
+    }
+    var cachedO = (force === true) ? null : cacheGet('kbirder_other_obs_v1');
+    if(cachedO){
+      state.otherObsFlat = normalizeRows(cachedO);
+      state.otherObsLoaded = true;
+      state.otherObsError = null;
+      renderOtherFilters();
+      renderOther();
+      renderSpecies();
+      try{
+        var resO = await callScriptGet('other_observations');
+        if(resO && !resO.error){
+          cacheSet('kbirder_other_obs_v1', resO.rows || []);
+          state.otherObsFlat = normalizeRows(resO.rows);
+          renderOtherFilters();
+          renderOther();
+          renderSpecies();
+        }
+      }catch(e){}
       return;
     }
     el('other-table-wrap').innerHTML = '<div class="empty-state"><div class="glyph">⏳</div><h3>타인관찰 기록 불러오는 중…</h3></div>';
     try{
       var res = await callScriptGet('other_observations');
       if(res.error) throw new Error(res.error);
+      cacheSet('kbirder_other_obs_v1', res.rows || []);
       state.otherObsFlat = normalizeRows(res.rows);
       state.otherObsLoaded = true;
       state.otherObsError = null;
@@ -1115,7 +1171,7 @@
   }
 
   el('sp-refresh-btn').addEventListener('click', function(){ loadAllObservations(true); });
-  el('other-refresh-btn').addEventListener('click', loadOtherObservations);
+  el('other-refresh-btn').addEventListener('click', function(){ loadOtherObservations(true); });
 
   /* ---------------- 종마스터 탭 ---------------- */
   function renderSpeciesFilters(){
@@ -1477,14 +1533,33 @@
     if(act === 'edit'){ state.otherEditRow = rn; renderOther(); return; }
     if(act === 'cancel'){ state.otherEditRow = null; renderOther(); return; }
     if(!state.scriptUrl){ showSettingsModal(); return; }
+    // 저장해 둔 목록은 옛날 것일 수 있으므로, 고치거나 지우기 직전에 시트의 최신 목록을 다시 받아
+    // 같은 행에 같은 기록이 그대로 있는지 확인한다(행 번호가 밀렸을 때 엉뚱한 줄을 건드리는 사고 방지).
+    async function verifyRow(){
+      var fresh = await callScriptGet('other_observations&fresh=1');
+      if(fresh.error) throw new Error(fresh.error);
+      var cur = (fresh.rows || []).filter(function(x){ return String(x.rowNumber) === rn; })[0];
+      var same = cur && String(cur.kr||'') === String(row.kr||'') &&
+                 String(cur.year) === String(row.year) && String(cur.month) === String(row.month) && String(cur.day) === String(row.day) &&
+                 String(cur.place||'') === String(row.place||'') && String(cur.observer||'') === String(row.observer||'');
+      if(!same){
+        cacheSet('kbirder_other_obs_v1', fresh.rows || []);
+        state.otherObsFlat = normalizeRows(fresh.rows);
+        state.otherEditRow = null;
+        renderOtherFilters(); renderOther();
+        throw new Error('그 사이 시트의 기록이 바뀌어서 목록을 새로 불러왔어요. 다시 한 번 눌러주세요.');
+      }
+      return cur;
+    }
     if(act === 'del'){
       if(!confirm('"' + (row.kr||'') + '" 기록을 구글시트에서 삭제할까요?')) return;
       try{
-        var res = await callScript({action:'delete', sheet:'other', rowNumber: parseInt(rn,10), expected:{kr: row.kr}});
+        await verifyRow();
+        var res = await callScript({action:'delete_other', rowNumber: parseInt(rn,10)});
         if(res.error) throw new Error(res.error);
         toast('삭제했습니다.');
         state.otherEditRow = null;
-        await loadOtherObservations();
+        await loadOtherObservations(true);
       }catch(err){
         toast('삭제에 실패했습니다: ' + (err && err.message ? err.message : err), 4600);
       }
@@ -1496,11 +1571,20 @@
       Array.prototype.forEach.call(tr.querySelectorAll('.o-edit-in'), function(inp){ rec[inp.getAttribute('data-f')] = inp.value.trim(); });
       if(!rec.kr){ toast('국명은 비울 수 없어요.', 3000); return; }
       try{
-        var res2 = await callScript({action:'update', sheet:'other', rowNumber: parseInt(rn,10), expected:{kr: row.kr}, record: rec});
+        var cur = await verifyRow();
+        // 서버는 한 줄 전체를 덮어쓰므로, 고치지 않는 칸(지역·날짜·좌표)은 원래 값을 그대로 함께 보낸다.
+        var cnt = rec.count;
+        if(/^-?\d+$/.test(cnt)) cnt = Number(cnt);
+        var full = {
+          admin: cur.admin, sido: cur.sido, place: rec.place, observer: rec.observer,
+          year: cur.year, month: cur.month, day: cur.day,
+          kr: rec.kr, count: cnt, lat: cur.lat, lng: cur.lng, memo: rec.memo
+        };
+        var res2 = await callScript({action:'update_other', rowNumber: parseInt(rn,10), record: full});
         if(res2.error) throw new Error(res2.error);
         toast('수정했습니다.');
         state.otherEditRow = null;
-        await loadOtherObservations();
+        await loadOtherObservations(true);
       }catch(err){
         toast('수정에 실패했습니다: ' + (err && err.message ? err.message : err), 4600);
       }
@@ -1698,6 +1782,13 @@
   });
 
   renderSetupBanner();
+  if(state.scriptUrl){
+    // 앱을 열자마자 뒤에서 미리 불러와 두면, 종마스터 탭을 열 때 이미 준비돼 있다.
+    setTimeout(function(){
+      loadAllObservations();
+      loadOtherObservations().then(function(){ renderSpecies(); });
+    }, 300);
+  }
   if(!state.scriptUrl){
     // 첫 실행이면 설정부터 눈에 띄게 안내
     setTimeout(function(){ if(!state.scriptUrl) showSettingsModal(); }, 400);
