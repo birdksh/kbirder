@@ -131,7 +131,7 @@
   /* 종마스터 표: 국명을 포함한 대부분의 칸은 무조건 한 줄로 유지하고(좁으면 가로 스크롤),
      칸이 좁아 정 안 맞을 때는 학명·영명만 두 줄까지 허용한다. */
   #sp-table-wrap tbody td{ white-space:nowrap; }
-  #sp-table-wrap td.sci, #sp-table-wrap td.en{ white-space:normal; }
+  #sp-table-wrap td.sci, #sp-table-wrap td.en, #sp-table-wrap td.jp{ white-space:normal; }
   .row-actions .icon-btn{ width:28px; height:28px; border:none; background:transparent; font-size:13px; }
   .row-actions .icon-btn:hover{ background:var(--bad-soft); color:var(--bad); }
 
@@ -471,7 +471,7 @@
       <div class="stat"><div class="label">IUCN 위협등급(NT~CR)</div><div class="value tabular" id="stat-sp-iucn">–</div></div>
     </div>
     <div class="toolbar">
-      <div class="search-box"><input type="search" id="sp-search" placeholder="국명·학명·영명 검색"></div>
+      <div class="search-box"><input type="search" id="sp-search" placeholder="국명·학명·영명·일본명 검색"></div>
       <select id="sp-filter-family"><option value="">과(科) 전체</option></select>
       <select id="sp-filter-status">
         <option value="">멸종등급 전체</option>
@@ -1199,7 +1199,7 @@
       if(fam && r.family !== fam) return false;
       if(status && r.status !== status) return false;
       if(q){
-        var hay = (r.kr + ' ' + r.sci + ' ' + (r.en||'')).toLowerCase();
+        var hay = (r.kr + ' ' + r.sci + ' ' + (r.en||'') + ' ' + (r.jp||'')).toLowerCase();
         if(hay.indexOf(q) === -1) return false;
       }
       return true;
@@ -1293,6 +1293,7 @@
       {key:'obsCount', label:'관찰횟수'},
       {key:'sci', label:'학명'},
       {key:'en', label:'영명'},
+      {key:'jp', label:'일본명'},
       {key:'family', label:'과명'},
       {key:'cat', label:'카테고리'},
       {key:'status', label:'멸종등급'},
@@ -1321,6 +1322,7 @@
           '<td class="tabular">'+obsCountCellHtml(r)+'</td>' +
           '<td class="sci">'+esc(r.sci)+'</td>' +
           '<td class="en">'+esc(dash(r.en))+'</td>' +
+          '<td class="jp">'+esc(dash(r.jp))+'</td>' +
           '<td class="fam-badge">'+esc(r.family)+'</td>' +
           '<td>'+(r.cat && !r.cat.trim().startsWith('가') ? '<span class="chip chip-muted">'+esc(r.cat)+'</span>' : esc(r.cat))+'</td>' +
           '<td>'+(r.status ? '<span class="chip chip-amber">'+esc(r.status)+'급</span>' : '') +'</td>' +
@@ -1335,6 +1337,7 @@
               '<td class="tabular">'+obsCountCellHtml(c)+'</td>' +
               '<td class="sci">'+esc(c.sci)+'</td>' +
               '<td class="en">'+esc(dash(c.en))+'</td>' +
+              '<td class="jp">'+esc(dash(c.jp))+'</td>' +
               '<td class="fam-badge">'+esc(c.family)+'</td>' +
               '<td>'+esc(c.cat)+'</td><td></td><td></td>' +
               '</tr>';
