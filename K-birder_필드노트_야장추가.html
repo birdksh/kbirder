@@ -131,7 +131,8 @@
   /* 종마스터 표: 국명을 포함한 대부분의 칸은 무조건 한 줄로 유지하고(좁으면 가로 스크롤),
      칸이 좁아 정 안 맞을 때는 학명·영명만 두 줄까지 허용한다. */
   #sp-table-wrap tbody td{ white-space:nowrap; }
-  #sp-table-wrap td.sci, #sp-table-wrap td.en, #sp-table-wrap td.jp{ white-space:normal; }
+  #sp-table-wrap td.sci, #sp-table-wrap td.en{ white-space:normal; }
+  #sp-table-wrap td.jp{ white-space:nowrap; word-break:keep-all; }
   .row-actions .icon-btn{ width:28px; height:28px; border:none; background:transparent; font-size:13px; }
   .row-actions .icon-btn:hover{ background:var(--bad-soft); color:var(--bad); }
 
