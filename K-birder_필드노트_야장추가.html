@@ -347,6 +347,26 @@
   .o-actions button{ border:none; background:transparent; cursor:pointer; font-size:14px; padding:4px 6px; border-radius:5px; color:var(--ink); }
   .o-actions button:hover{ background:var(--accent-soft); }
   .o-actions .o-del:hover{ background:var(--bad-soft); color:var(--bad); }
+  /* eBird 파일 불러오기 */
+  .eb-top{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .eb-top label{ font-size:12px; color:var(--muted); }
+  .eb-top input[type="date"]{ border:1px solid var(--line-strong); border-radius:6px; background:var(--surface); color:var(--ink); font:inherit; padding:5px 7px; }
+  .eb-item{ border-bottom:1px dashed var(--line); padding:10px 2px; display:flex; flex-direction:column; gap:6px; }
+  .eb-item:last-child{ border-bottom:none; }
+  .eb-head{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:13px; cursor:pointer; }
+  .eb-head input{ accent-color:var(--accent); width:18px; height:18px; }
+  .eb-tag{ font-size:11px; padding:2px 8px; border-radius:99px; font-weight:600; }
+  .eb-tag.eb-new{ background:var(--accent-soft); color:var(--accent); }
+  .eb-tag.eb-dup{ background:var(--amber-soft); color:var(--amber); }
+  .eb-tag.eb-done{ background:var(--surface-2); color:var(--muted); }
+  .eb-place{ border:1px solid var(--line-strong); border-radius:6px; background:var(--surface); color:var(--ink); font:inherit; padding:5px 7px; max-width:320px; }
+  .eb-item details{ font-size:12px; color:var(--muted); }
+  .eb-item summary{ cursor:pointer; padding:2px 0; }
+  .eb-sp{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:3px 0; }
+  .eb-sp .eb-kr{ flex:1 1 140px; min-width:110px; border:1px solid var(--line-strong); border-radius:6px; background:var(--surface); color:var(--ink); font:inherit; padding:3px 6px; }
+  .eb-sp .eb-kr.unmatched{ border-color:var(--amber); background:var(--amber-soft); }
+  .eb-sp .eb-cnt{ width:36px; text-align:right; color:var(--ink); }
+  .eb-sp .eb-orig{ font-size:11px; color:var(--accent); }
   </style>
 </head>
 <body>
@@ -454,6 +474,26 @@
         <button type="button" class="btn btn-primary" id="f-save-btn" disabled>구글시트에 저장</button>
         <div style="flex:1;"></div>
         <button class="btn btn-ghost" id="f-clear">지우기</button>
+      </div>
+    </div>
+
+    <div class="card" id="eb-card">
+      <div class="card-head">
+        <h2>📥 eBird 파일 불러오기</h2>
+        <p class="card-desc">eBird에서 받은 zip(또는 CSV) 파일을 압축을 풀지 않고 그대로 고르세요. 새 체크리스트만 골라서 구글시트에 저장할 수 있어요.</p>
+      </div>
+      <div class="card-body">
+        <input type="file" id="eb-file" accept=".zip,.csv,application/zip,text/csv">
+        <div class="eb-top">
+          <label for="eb-since">이 날짜부터 보기</label>
+          <input type="date" id="eb-since">
+          <button type="button" class="btn btn-ghost btn-small" id="eb-all-btn">전체 선택/해제</button>
+        </div>
+        <div class="gps-hint" id="eb-status">파일을 고르면 체크리스트 목록이 나와요. 이미 입력한 것 같은 기록은 체크가 꺼진 채로 나오니, 저장 전에 한 번 훑어보세요.</div>
+        <div id="eb-list"></div>
+      </div>
+      <div class="card-foot">
+        <button type="button" class="btn btn-primary" id="eb-save-btn" disabled>선택한 체크리스트 저장</button>
       </div>
     </div>
 
@@ -2189,6 +2229,319 @@
   quickRestore();
   renderQuickList();
   draftRestore();
+
+  /* ==================== eBird 내려받기 파일(zip/CSV) 불러오기 ==================== */
+  state.eb = { lists: [], fileName: '' };
+  var EB_DONE_KEY = 'kbirder_ebird_done_v1';
+  var EB_STATE_ADMIN = {
+    'KR-11':'서울','KR-26':'부산','KR-27':'대구','KR-28':'인천','KR-29':'광주','KR-30':'대전','KR-31':'울산',
+    'KR-41':'경기','KR-42':'강원','KR-51':'강원','KR-43':'충북','KR-44':'충남','KR-45':'전북','KR-46':'전남',
+    'KR-47':'경북','KR-48':'경남','KR-50':'제주','KR-49':'세종'
+  };
+
+  function ebDoneGet(){ try{ return JSON.parse(localStorage.getItem(EB_DONE_KEY) || '{}') || {}; }catch(e){ return {}; } }
+  function ebDoneAdd(ids){
+    try{ var d = ebDoneGet(); ids.forEach(function(id){ d[id] = 1; }); localStorage.setItem(EB_DONE_KEY, JSON.stringify(d)); }catch(e){}
+  }
+
+  // zip 파일 안의 첫 CSV를 꺼낸다(외부 라이브러리 없이 브라우저 기본 기능으로 압축 해제)
+  async function ebUnzipCsv(buf){
+    var u8 = new Uint8Array(buf), dv = new DataView(buf);
+    var eocd = -1;
+    for(var i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--){
+      if(dv.getUint32(i, true) === 0x06054b50){ eocd = i; break; }
+    }
+    if(eocd < 0) throw new Error('zip 파일 형식이 아니에요.');
+    var cdCount = dv.getUint16(eocd + 10, true), p = dv.getUint32(eocd + 16, true), found = null;
+    for(var n = 0; n < cdCount; n++){
+      if(dv.getUint32(p, true) !== 0x02014b50) break;
+      var method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true);
+      var nlen = dv.getUint16(p + 28, true), elen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true);
+      var loff = dv.getUint32(p + 42, true);
+      var name = new TextDecoder().decode(u8.subarray(p + 46, p + 46 + nlen));
+      if(/\.csv$/i.test(name) && name.indexOf('__MACOSX') !== 0){ found = {method: method, csize: csize, loff: loff}; break; }
+      p += 46 + nlen + elen + clen;
+    }
+    if(!found) throw new Error('zip 안에서 CSV 파일을 찾지 못했어요.');
+    var lnlen = dv.getUint16(found.loff + 26, true), lelen = dv.getUint16(found.loff + 28, true);
+    var start = found.loff + 30 + lnlen + lelen;
+    var data = u8.subarray(start, start + found.csize);
+    if(found.method === 0) return data;
+    if(found.method !== 8) throw new Error('지원하지 않는 압축 방식이에요.');
+    if(typeof DecompressionStream === 'undefined') throw new Error('이 브라우저는 압축 해제를 지원하지 않아요. 크롬을 최신 버전으로 업데이트해주세요.');
+    var stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  function ebParseCsv(text){
+    var rows = [], row = [], field = '', inQ = false, i = 0, n = text.length;
+    while(i < n){
+      var c = text.charAt(i);
+      if(inQ){
+        if(c === '"'){ if(text.charAt(i + 1) === '"'){ field += '"'; i += 2; continue; } inQ = false; i++; continue; }
+        field += c; i++; continue;
+      }
+      if(c === '"'){ inQ = true; i++; continue; }
+      if(c === ','){ row.push(field); field = ''; i++; continue; }
+      if(c === '\r'){ i++; continue; }
+      if(c === '\n'){ row.push(field); rows.push(row); row = []; field = ''; i++; continue; }
+      field += c; i++;
+    }
+    if(field !== '' || row.length){ row.push(field); rows.push(row); }
+    return rows;
+  }
+
+  // "서귀포--마라도(Seogwipo--Mara-do(island))" → "마라도"
+  function ebPlaceFromLocation(loc){
+    var s = String(loc || '').replace(/\([A-Za-z].*$/, '').trim();
+    if(s.indexOf('--') >= 0){ s = s.split('--').slice(1).join(' ').trim(); }
+    return s.replace(/^\(+/, '').trim();
+  }
+
+  // 학명 → 내 종마스터 (학명이 같으면 eBird 국명이 달라도 "내 조류목록의 국명"을 쓴다)
+  var ebSciMap = null;
+  function ebGetSciMap(){
+    if(ebSciMap) return ebSciMap;
+    ebSciMap = {};
+    state.species.forEach(function(r){
+      var k = String(r.sci || '').trim().toLowerCase();
+      if(!k) return;
+      var cur = ebSciMap[k];
+      // 같은 학명이 여러 줄이면 종(Species) 줄을 우선한다
+      if(!cur || (cur.taxon !== 'Species' && r.taxon === 'Species')) ebSciMap[k] = r;
+    });
+    return ebSciMap;
+  }
+
+  // eBird 종명 → 내 종마스터 국명.
+  // 1순위: 학명이 내 목록과 똑같으면 내 목록 국명  2순위: 국명이 같으면 그대로  3순위: 괄호 설명을 뗀 국명
+  function ebMatchName(orig, sci){
+    var name = String(orig || '').trim();
+    var sk = String(sci || '').trim().toLowerCase();
+    var hit = sk ? ebGetSciMap()[sk] : null;
+    var stripped = name.replace(/\s*\([^)]*\)\s*$/, '').trim();
+    // 예외: taimyrensis는 잡종이라 내 목록에 없으므로 "(잡종) 줄무늬노랑발갈매기"로 기록한다
+    if(sk === 'larus fuscus taimyrensis') return {kr: '(잡종) 줄무늬노랑발갈매기', matched: true, special: true, orig: orig, sci: sci, bySci: true};
+    // 예외: eBird 이름이 "A x B(잡종)"이면 "(잡종)A x B"로 기록한다
+    var hy = /^(.+?)\s*\(잡종\)$/.exec(name);
+    if(hy) return {kr: '(잡종)' + hy[1].trim(), matched: true, special: true, orig: orig, sci: sci, bySci: true};
+    if(hit && hit.kr) return {kr: hit.kr, matched: true, orig: orig, sci: sci, bySci: hit.kr !== name && hit.kr !== stripped};
+    if(matchSpecies(name)) return {kr: name, matched: true, orig: orig, sci: sci};
+    if(stripped && matchSpecies(stripped)) return {kr: stripped, matched: true, orig: orig, sci: sci};
+    // 마지막 수단: 아종 학명(3단어)이 내 목록에 없으면 종 학명(앞 2단어)으로 맞춰본다
+    if(/^[a-z]+ [a-z]+ [a-z]+$/.test(sk)){
+      var sp2 = ebGetSciMap()[sk.split(' ').slice(0, 2).join(' ')];
+      if(sp2 && sp2.kr) return {kr: sp2.kr, matched: true, orig: orig, sci: sci, bySci: true};
+    }
+    return {kr: name, matched: false, orig: orig, sci: sci};
+  }
+
+  function ebBuildLists(rows){
+    var h = {}; rows[0].forEach(function(k, i){ h[k.trim()] = i; });
+    ['Submission ID', 'Common Name', 'Count', 'Date'].forEach(function(k){ if(h[k] == null) throw new Error('eBird 내려받기 파일이 아닌 것 같아요 (' + k + ' 칸이 없어요).'); });
+    var map = {}, order = [];
+    for(var r = 1; r < rows.length; r++){
+      var x = rows[r]; if(!x || x.length < 5) continue;
+      var id = x[h['Submission ID']]; if(!id) continue;
+      var c = map[id];
+      if(!c){
+        var loc = x[h['Location']] || '', st = x[h['State/Province']] || '';
+        var dparts = String(x[h['Date']]).split('-');
+        c = map[id] = {
+          id: id, date: x[h['Date']], year: parseInt(dparts[0], 10), month: parseInt(dparts[1], 10), day: parseInt(dparts[2], 10),
+          time: x[h['Time']] || '', state: st, locName: loc, place: ebPlaceFromLocation(loc),
+          lat: parseFloat(x[h['Latitude']]), lng: parseFloat(x[h['Longitude']]), rows: [], checked: false, tag: 'new'
+        };
+        order.push(c);
+      }
+      var m = ebMatchName(x[h['Common Name']], h['Scientific Name'] != null ? x[h['Scientific Name']] : '');
+      c.rows.push({kr: m.kr, matched: m.matched, special: !!m.special, orig: m.orig, bySci: !!m.bySci, count: x[h['Count']]});
+    }
+    order.sort(function(a, b){ return a.date < b.date ? 1 : a.date > b.date ? -1 : (a.time < b.time ? 1 : -1); });
+    return order;
+  }
+
+  function ebDefaultSince(){
+    var best = '';
+    (state.recentRows || []).forEach(function(r){
+      var d = r.year + '-' + String(r.month).padStart(2, '0') + '-' + String(r.day).padStart(2, '0');
+      if(d > best) best = d;
+    });
+    if(best) return best;
+    var t = new Date(Date.now() - 14 * 86400000);
+    return t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0');
+  }
+
+  // 각 체크리스트가 이미 시트에 들어 있는지(최근 입력 목록과 겹치는지) 표시를 붙인다
+  function ebMarkTags(){
+    var done = ebDoneGet(), have = {};
+    (state.recentRows || []).forEach(function(r){
+      var d = r.year + '-' + String(r.month).padStart(2, '0') + '-' + String(r.day).padStart(2, '0');
+      have[d + '|' + String(r.kr || '').trim() + '|' + String(r.count == null ? '' : r.count)] = 1;
+    });
+    state.eb.lists.forEach(function(c){
+      if(done[c.id]){ c.tag = 'done'; c.checked = false; return; }
+      var hit = 0;
+      c.rows.forEach(function(r){
+        var cnt = /^\d+$/.test(r.count) ? r.count : '';
+        if(have[c.date + '|' + r.kr + '|' + cnt]) hit++;
+      });
+      if(c.rows.length && hit / c.rows.length >= 0.5){ c.tag = 'dup'; c.checked = false; }
+      else { c.tag = 'new'; c.checked = true; }
+    });
+  }
+
+  var EB_LIMIT = 120;
+  function ebFiltered(){
+    var since = el('eb-since').value;
+    return state.eb.lists.filter(function(c){ return !since || c.date >= since; });
+  }
+  // 화면에 보이는 체크리스트만(저장·전체선택도 보이는 것만 대상으로 한다)
+  function ebVisible(){ return ebFiltered().slice(0, EB_LIMIT); }
+
+  function renderEb(){
+    var vis = ebVisible(), LIMIT = EB_LIMIT, totalF = ebFiltered().length;
+    var shown = vis;
+    var html = '';
+    shown.forEach(function(c){
+      var idx = state.eb.lists.indexOf(c);
+      var unm = c.rows.filter(function(r){ return !r.matched; }).length;
+      var tagTxt = c.tag === 'new' ? '새 기록' : c.tag === 'dup' ? '이미 입력된 것 같아요' : '이미 가져옴';
+      html += '<div class="eb-item" data-i="' + idx + '">' +
+        '<label class="eb-head"><input type="checkbox" class="eb-chk" ' + (c.checked ? 'checked' : '') + '>' +
+        '<b>' + esc(c.date) + '</b><span>' + esc(c.time) + '</span><span>· ' + c.rows.length + '종</span>' +
+        '<span class="eb-tag eb-' + c.tag + '">' + tagTxt + '</span>' +
+        (unm ? '<span class="eb-tag eb-dup">종명 확인 ' + unm + '</span>' : '') + '</label>' +
+        '<input type="text" class="eb-place" value="' + esc(c.place) + '" placeholder="장소">' +
+        '<details><summary>종 목록 보기 (eBird 장소: ' + esc(c.locName.replace(/\([A-Za-z].*$/, '')) + ')</summary>' +
+        c.rows.map(function(r, j){
+          var cands = '';
+          if(!r.matched){
+            findSpeciesCandidates(r.kr.replace(/\s*\([^)]*\)\s*$/, ''), 3).forEach(function(cd){
+              cands += '<button type="button" class="qr-cand-btn eb-cand" data-j="' + j + '" data-kr="' + esc(cd.kr) + '">' + esc(cd.kr) + '</button>';
+            });
+          }
+          return '<div class="eb-sp"><input type="text" class="eb-kr ' + (r.matched ? '' : 'unmatched') + '" data-j="' + j + '" value="' + esc(r.kr) + '">' +
+            '<span class="eb-cnt">' + esc(/^\d+$/.test(r.count) ? r.count : 'X') + '</span>' +
+            (r.bySci ? '<span class="eb-orig">학명 기준 변경 (eBird: ' + esc(r.orig) + ')</span>' : '') + cands + '</div>';
+        }).join('') + '</details></div>';
+    });
+    if(!shown.length) html = '<div class="quick-empty">이 날짜 이후의 체크리스트가 없어요. 날짜를 앞으로 옮겨 보세요.</div>';
+    if(totalF > LIMIT) html += '<div class="gps-hint">최근 ' + LIMIT + '개만 보여드려요(전체 ' + totalF + '개). 나머지는 날짜를 뒤로 옮겨 가며 불러오세요.</div>';
+    el('eb-list').innerHTML = html;
+    var sel = vis.filter(function(c){ return c.checked; });
+    var recs = sel.reduce(function(a, c){ return a + c.rows.length; }, 0);
+    el('eb-save-btn').disabled = sel.length === 0;
+    el('eb-save-btn').textContent = sel.length ? ('선택한 ' + sel.length + '개 체크리스트 저장 (' + recs + '건)') : '선택한 체크리스트 저장';
+  }
+
+  el('eb-file').addEventListener('change', async function(){
+    var f = this.files && this.files[0]; if(!f) return;
+    var st = el('eb-status');
+    st.textContent = '파일을 읽는 중…';
+    try{
+      var buf = await f.arrayBuffer();
+      var u8 = new Uint8Array(buf);
+      var csvBytes = (u8[0] === 0x50 && u8[1] === 0x4b) ? await ebUnzipCsv(buf) : u8;
+      var text = new TextDecoder('utf-8').decode(csvBytes).replace(/^﻿/, '');
+      var rows = ebParseCsv(text);
+      state.eb.lists = ebBuildLists(rows);
+      state.eb.fileName = f.name;
+      if(state.scriptUrl && (!state.recentRows || !state.recentRows.length)){ try{ await loadRecent(); }catch(e){} }
+      el('eb-since').value = ebDefaultSince();
+      ebMarkTags();
+      var newCnt = ebVisible().filter(function(c){ return c.tag === 'new'; }).length;
+      st.textContent = '전체 ' + state.eb.lists.length + '개 체크리스트를 읽었어요. 선택한 날짜 이후 중 새 기록은 ' + newCnt + '개예요. (시트의 최근 입력 기록과 비교한 결과라서, 저장 전에 훑어보세요.)';
+      renderEb();
+    }catch(err){
+      st.textContent = '불러오지 못했어요: ' + (err && err.message ? err.message : err);
+    }
+  });
+
+  el('eb-since').addEventListener('change', function(){ ebMarkTags(); renderEb(); });
+
+  el('eb-all-btn').addEventListener('click', function(){
+    var vis = ebVisible(), anyOff = vis.some(function(c){ return !c.checked; });
+    vis.forEach(function(c){ c.checked = anyOff; });
+    renderEb();
+  });
+
+  el('eb-list').addEventListener('change', function(e){
+    var item = e.target.closest('.eb-item'); if(!item) return;
+    var c = state.eb.lists[parseInt(item.getAttribute('data-i'), 10)];
+    if(e.target.classList.contains('eb-chk')){
+      c.checked = e.target.checked;
+      var sel = ebVisible().filter(function(x){ return x.checked; });
+      var recs = sel.reduce(function(a, x){ return a + x.rows.length; }, 0);
+      el('eb-save-btn').disabled = sel.length === 0;
+      el('eb-save-btn').textContent = sel.length ? ('선택한 ' + sel.length + '개 체크리스트 저장 (' + recs + '건)') : '선택한 체크리스트 저장';
+    }
+  });
+  el('eb-list').addEventListener('input', function(e){
+    var item = e.target.closest('.eb-item'); if(!item) return;
+    var c = state.eb.lists[parseInt(item.getAttribute('data-i'), 10)];
+    if(e.target.classList.contains('eb-place')) c.place = e.target.value;
+    if(e.target.classList.contains('eb-kr')){
+      var r = c.rows[parseInt(e.target.getAttribute('data-j'), 10)];
+      r.kr = e.target.value; r.matched = !!matchSpecies(r.kr); r.special = false;
+      e.target.classList.toggle('unmatched', !r.matched);
+    }
+  });
+  el('eb-list').addEventListener('click', function(e){
+    var b = e.target.closest('.eb-cand'); if(!b) return;
+    var item = b.closest('.eb-item');
+    var c = state.eb.lists[parseInt(item.getAttribute('data-i'), 10)];
+    var j = parseInt(b.getAttribute('data-j'), 10);
+    c.rows[j].kr = b.getAttribute('data-kr'); c.rows[j].matched = true;
+    var inp = item.querySelector('.eb-kr[data-j="' + j + '"]');
+    inp.value = c.rows[j].kr; inp.classList.remove('unmatched');
+  });
+
+  el('eb-save-btn').addEventListener('click', async function(){
+    if(!state.scriptUrl){ showSettingsModal(); return; }
+    var sel = ebVisible().filter(function(c){ return c.checked; });
+    if(!sel.length) return;
+    var records = [];
+    sel.forEach(function(c){
+      var place = (c.place || '').trim() || '미지정장소';
+      var loc = lookupPlace(place);
+      var overseas = c.state && c.state.indexOf('KR-') !== 0;
+      var admin = loc.province || (overseas ? '국외' : (EB_STATE_ADMIN[c.state] || ''));
+      c.rows.forEach(function(r){
+        if(!r.kr || !r.kr.trim()) return;
+        var memo = 'eBird ' + c.id;
+        if(!r.special && !matchSpecies(r.kr)) memo += ' / 확인필요(정식목록 미매칭)';
+        if(r.orig && r.orig.trim() !== r.kr.trim()) memo += ' / 원본: ' + r.orig.trim();
+        records.push({
+          admin: admin, sido: loc.city, province: admin, city: loc.city, place: place,
+          year: c.year, month: c.month, day: c.day, kr: r.kr.trim(),
+          count: /^\d+$/.test(r.count) ? Number(r.count) : '',
+          memo: memo, lat: isNaN(c.lat) ? '' : c.lat, lng: isNaN(c.lng) ? '' : c.lng
+        });
+      });
+    });
+    if(!confirm('체크리스트 ' + sel.length + '개, 기록 ' + records.length + '건을 구글시트에 저장할까요?')) return;
+    var btn = el('eb-save-btn'), orig = btn.textContent;
+    btn.disabled = true;
+    var added = 0, skipped = 0;
+    try{
+      for(var i = 0; i < records.length; i += 150){
+        btn.textContent = '저장 중… (' + Math.min(i + 150, records.length) + '/' + records.length + ')';
+        var res = await callScript({action: 'append', records: records.slice(i, i + 150)});
+        if(res.error) throw new Error(res.error);
+        added += res.addedCount || 0; skipped += res.skippedDupCount || 0;
+      }
+      ebDoneAdd(sel.map(function(c){ return c.id; }));
+      state.eb.lists = state.eb.lists.filter(function(c){ return sel.indexOf(c) < 0; });
+      toast('✓ ' + added + '건 저장했습니다.' + (skipped ? ' (똑같은 중복 ' + skipped + '건은 건너뛰었어요)' : ''), 4200);
+      await loadRecent();
+      ebMarkTags();
+      renderEb();
+    }catch(err){
+      toast('저장에 실패했습니다: ' + (err && err.message ? err.message : err) + ' (일부는 저장됐을 수 있으니 최근 입력을 확인해주세요)', 6000);
+      btn.textContent = orig; btn.disabled = false;
+    }
+  });
 
   // ==================== 사진기록 탭 ====================
   
