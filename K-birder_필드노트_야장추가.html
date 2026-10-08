@@ -359,6 +359,8 @@
   .eb-tag.eb-new{ background:var(--accent-soft); color:var(--accent); }
   .eb-tag.eb-dup{ background:var(--amber-soft); color:var(--amber); }
   .eb-tag.eb-done{ background:var(--surface-2); color:var(--muted); }
+  .eb-pc{ display:flex; gap:6px; flex-wrap:wrap; }
+  .eb-city{ border:1px solid var(--line-strong); border-radius:6px; background:var(--surface); color:var(--ink); font:inherit; padding:5px 7px; width:110px; }
   .eb-place{ border:1px solid var(--line-strong); border-radius:6px; background:var(--surface); color:var(--ink); font:inherit; padding:5px 7px; max-width:320px; }
   .eb-item details{ font-size:12px; color:var(--muted); }
   .eb-item summary{ cursor:pointer; padding:2px 0; }
@@ -2313,6 +2315,43 @@
     return ebSciMap;
   }
 
+  // 시군구 후보를 찾는다: ① 내 장소목록 ② 장소 이름에 들어 있는 주소("…, 진도군, 전라남도, KR") ③ eBird 지역 이름(예: 목포 → 목포시)
+  var ebCityIdx = null;
+  function ebGetCityIdx(){
+    if(ebCityIdx) return ebCityIdx;
+    ebCityIdx = {};
+    Object.keys(state.placeLookup || {}).forEach(function(k){
+      var v = state.placeLookup[k]; if(!v || !v.시군구) return;
+      var a = v.행정 || '';
+      (ebCityIdx[a] = ebCityIdx[a] || {})[v.시군구] = 1;
+    });
+    return ebCityIdx;
+  }
+  function ebGuessCity(place, region, admin, locName){
+    var hit = lookupPlace(place);
+    if(hit.city) return hit.city;
+    var m = /([가-힣]+(?:시|군|구)),\s*[가-힣]+(?:도|특별시|광역시|특별자치시|특별자치도),\s*KR/.exec(locName || '');
+    if(m) return m[1];
+    var reg = String(region || '').replace(/[()]/g, '').trim();
+    var set = ebGetCityIdx()[admin] || {};
+    var found = '';
+    Object.keys(set).forEach(function(c){ if(!found && reg && c.length > 1 && c.slice(0, -1) === reg) found = c; });
+    return found;
+  }
+  // "압해도--대천리" 같은 eBird 장소 이름에서 내가 쓰는 장소 이름을 고른다
+  function ebResolvePlace(loc){
+    var s0 = String(loc || '').replace(/\([A-Za-z].*$/, '').trim();
+    var region = '', name = s0;
+    if(s0.indexOf('--') >= 0){ var pp = s0.split('--'); region = pp[0].trim(); name = pp.slice(1).join(' ').trim(); }
+    name = name.replace(/^\(+/, '').trim();
+    if(name.indexOf(')') >= 0 && name.indexOf('(') < 0) name = name.split(')')[0].trim();
+    var cands = [name, region.replace(/^\(+/, '').trim(), name.split(/[-\s]/)[0]];
+    for(var i = 0; i < cands.length; i++){
+      if(cands[i] && lookupPlace(cands[i]).province) return {place: cands[i], region: region};
+    }
+    return {place: name, region: region};
+  }
+
   // eBird 종명 → 내 종마스터 국명.
   // 1순위: 학명이 내 목록과 똑같으면 내 목록 국명  2순위: 국명이 같으면 그대로  3순위: 괄호 설명을 뗀 국명
   function ebMatchName(orig, sci){
@@ -2346,10 +2385,13 @@
       var c = map[id];
       if(!c){
         var loc = x[h['Location']] || '', st = x[h['State/Province']] || '';
+        var rp = ebResolvePlace(loc);
+        var admin0 = lookupPlace(rp.place).province || (st.indexOf('KR-') === 0 ? (EB_STATE_ADMIN[st] || '') : '국외');
         var dparts = String(x[h['Date']]).split('-');
         c = map[id] = {
           id: id, date: x[h['Date']], year: parseInt(dparts[0], 10), month: parseInt(dparts[1], 10), day: parseInt(dparts[2], 10),
-          time: x[h['Time']] || '', state: st, locName: loc, place: ebPlaceFromLocation(loc),
+          time: x[h['Time']] || '', state: st, locName: loc, place: rp.place, region: rp.region,
+          city: ebGuessCity(rp.place, rp.region, admin0, loc), cityEdited: false,
           lat: parseFloat(x[h['Latitude']]), lng: parseFloat(x[h['Longitude']]), rows: [], checked: false, tag: 'new'
         };
         order.push(c);
@@ -2412,7 +2454,8 @@
         '<b>' + esc(c.date) + '</b><span>' + esc(c.time) + '</span><span>· ' + c.rows.length + '종</span>' +
         '<span class="eb-tag eb-' + c.tag + '">' + tagTxt + '</span>' +
         (unm ? '<span class="eb-tag eb-dup">종명 확인 ' + unm + '</span>' : '') + '</label>' +
-        '<input type="text" class="eb-place" value="' + esc(c.place) + '" placeholder="장소">' +
+        '<div class="eb-pc"><input type="text" class="eb-place" value="' + esc(c.place) + '" placeholder="장소">' +
+        '<input type="text" class="eb-city" value="' + esc(c.city || '') + '" placeholder="시군구"></div>' +
         '<details><summary>종 목록 보기 (eBird 장소: ' + esc(c.locName.replace(/\([A-Za-z].*$/, '')) + ')</summary>' +
         c.rows.map(function(r, j){
           var cands = '';
@@ -2480,7 +2523,15 @@
   el('eb-list').addEventListener('input', function(e){
     var item = e.target.closest('.eb-item'); if(!item) return;
     var c = state.eb.lists[parseInt(item.getAttribute('data-i'), 10)];
-    if(e.target.classList.contains('eb-place')) c.place = e.target.value;
+    if(e.target.classList.contains('eb-place')){
+      c.place = e.target.value;
+      if(!c.cityEdited){
+        var adm = lookupPlace(c.place).province || (c.state.indexOf('KR-') === 0 ? (EB_STATE_ADMIN[c.state] || '') : '국외');
+        c.city = ebGuessCity(c.place, c.region, adm, c.locName);
+        item.querySelector('.eb-city').value = c.city;
+      }
+    }
+    if(e.target.classList.contains('eb-city')){ c.city = e.target.value; c.cityEdited = true; }
     if(e.target.classList.contains('eb-kr')){
       var r = c.rows[parseInt(e.target.getAttribute('data-j'), 10)];
       r.kr = e.target.value; r.matched = !!matchSpecies(r.kr); r.special = false;
@@ -2505,6 +2556,7 @@
     sel.forEach(function(c){
       var place = (c.place || '').trim() || '미지정장소';
       var loc = lookupPlace(place);
+      var cityVal = (c.city || '').trim();
       var overseas = c.state && c.state.indexOf('KR-') !== 0;
       var admin = loc.province || (overseas ? '국외' : (EB_STATE_ADMIN[c.state] || ''));
       c.rows.forEach(function(r){
@@ -2513,7 +2565,7 @@
         if(!r.special && !matchSpecies(r.kr)) memo += ' / 확인필요(정식목록 미매칭)';
         if(r.orig && r.orig.trim() !== r.kr.trim()) memo += ' / 원본: ' + r.orig.trim();
         records.push({
-          admin: admin, sido: loc.city, province: admin, city: loc.city, place: place,
+          admin: admin, sido: cityVal, province: admin, city: cityVal, place: place,
           year: c.year, month: c.month, day: c.day, kr: r.kr.trim(),
           count: /^\d+$/.test(r.count) ? Number(r.count) : '',
           memo: memo, lat: isNaN(c.lat) ? '' : c.lat, lng: isNaN(c.lng) ? '' : c.lng
