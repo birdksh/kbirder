@@ -1836,6 +1836,7 @@
     setTimeout(function(){
       loadAllObservations();
       loadOtherObservations().then(function(){ renderSpecies(); });
+      setTimeout(function(){ loadPhotoData(); }, 1500);
     }, 300);
   }
   if(!state.scriptUrl){
@@ -2605,35 +2606,54 @@
     expanded: {}
   };
 
-  function loadPhotoData(){
-    if(photoState.data.length > 0) return;
+  function mapPhotoRows(rows){
+    return (rows || []).map(function(row){
+      return {
+        kr: row.kr || '',
+        sci: row.sci || '',
+        en: row.en || '',
+        family: row.family || '',
+        date: row.date || '',
+        place: row.place || '',
+        photographer: row.photographer || '',
+        lat: row.lat || '',
+        lng: row.lng || '',
+        memo: row.memo || ''
+      };
+    });
+  }
 
-    // 데이터를 받아오는 동안 빈 화면 대신 로딩 표시를 보여준다(체감 속도 개선).
+  // 속도 개선: 지난번에 받은 사진기록을 이 기기에 저장해 두고, 열자마자 먼저 보여준 뒤
+  // 뒤에서 조용히 최신으로 갱신한다(저장본이 없을 때만 "불러오는 중"이 뜬다).
+  function loadPhotoData(force){
+    if(!state.scriptUrl) return;
+    if(photoState.loading) return;
+    if(photoState.fresh && force !== true) return;
+    photoState.loading = true;
+
+    var cached = (force === true) ? null : cacheGet('kbirder_photos_v1');
     var wrap = el('photo-table-wrap');
-    if(wrap && !wrap.innerHTML){
-      wrap.innerHTML = '<div class="empty-state"><div class="glyph">⏳</div><h3>사진기록 불러오는 중…</h3><p>사진 수가 많으면 몇 초 정도 걸릴 수 있어요.</p></div>';
+
+    if(cached && cached.length && !photoState.data.length){
+      photoState.data = mapPhotoRows(cached);
+      renderPhotoFilters();
+      renderPhotos();
+    } else if(!photoState.data.length && wrap && !wrap.innerHTML){
+      wrap.innerHTML = '<div class="empty-state"><div class="glyph">⏳</div><h3>사진기록 불러오는 중…</h3><p>처음 한 번만 오래 걸리고, 다음부터는 바로 열려요.</p></div>';
     }
 
-    callScriptGet('photos_list').then(function(result){
-      if(result.success && result.rows){
-        photoState.data = result.rows.map(function(row){
-          return {
-            kr: row.kr || '',
-            sci: row.sci || '',
-            en: row.en || '',
-            family: row.family || '',
-            date: row.date || '',
-            place: row.place || '',
-            photographer: row.photographer || '',
-            lat: row.lat || '',
-            lng: row.lng || '',
-            memo: row.memo || ''
-          };
-        });
+    return callScriptGet('photos_list').then(function(result){
+      photoState.loading = false;
+      if(result && result.success && result.rows){
+        cacheSet('kbirder_photos_v1', result.rows);
+        photoState.data = mapPhotoRows(result.rows);
+        photoState.fresh = true;
         renderPhotoFilters();
         renderPhotos();
       }
     }).catch(function(err){
+      photoState.loading = false;
+      if(photoState.data.length) return; // 저장본을 이미 보여줬으면 조용히 넘어감
       console.error('사진기록 로드 실패:', err);
       var msg = (err && err.message) ? err.message : String(err);
       toast('사진기록을 불러오지 못했어요: ' + msg, 4000);
@@ -2642,7 +2662,7 @@
         '<p style="word-break:break-all;">' + esc(msg) + '</p>' +
         '<button type="button" class="btn btn-ghost btn-small" id="photo-retry-btn">↻ 다시 시도</button></div>';
       var retryBtn = el('photo-retry-btn');
-      if(retryBtn) retryBtn.addEventListener('click', loadPhotoData);
+      if(retryBtn) retryBtn.addEventListener('click', function(){ loadPhotoData(true); });
     });
   }
 
