@@ -808,10 +808,40 @@
     return {groups: groups, orphanErrors: orphanErrors};
   }
 
-  function groupKrCounts(g){
-    var counts = {};
-    g.records.forEach(function(r){ if(r.kr) counts[r.kr] = (counts[r.kr] || 0) + 1; });
-    return counts;
+  // 같은 종이라도 좌표가 서로 다른 곳(약 50m 이상)이면 '다른 기록'으로 보고 중복으로 치지 않는다.
+  // 좌표가 한쪽이라도 없으면 비교할 수 없으므로 같은 곳으로 본다.
+  var DUP_SAME_SPOT_M = 50;
+  function distMeters(lat1, lng1, lat2, lng2){
+    var dLat = (lat2 - lat1) * 111320;
+    var dLng = (lng2 - lng1) * 111320 * Math.cos((lat1 + lat2) / 2 * Math.PI / 180);
+    return Math.sqrt(dLat * dLat + dLng * dLng);
+  }
+  function sameSpot(a, b){
+    if(a.lat == null || a.lng == null || b.lat == null || b.lng == null) return true;
+    return distMeters(a.lat, a.lng, b.lat, b.lng) < DUP_SAME_SPOT_M;
+  }
+  // 상태: 0=겹침 없음, 1=같은 종·같은 곳(좌표 같거나 없음) → '중복', 2=같은 종이지만 좌표가 다름 → '다른 좌표'
+  // 어느 쪽이든 알려주고, 합칠지 따로 둘지는 사용자가 정한다.
+  function groupDupStates(g){
+    var st = g.records.map(function(){ return 0; });
+    for(var i = 0; i < g.records.length; i++){
+      for(var j = i + 1; j < g.records.length; j++){
+        var a = g.records[i], b = g.records[j];
+        if(!a.kr || a.kr !== b.kr) continue;
+        if(sameSpot(a, b)){ st[i] = 1; st[j] = 1; }
+        else { if(st[i] === 0) st[i] = 2; if(st[j] === 0) st[j] = 2; }
+      }
+    }
+    return st;
+  }
+  function dupWarnHtml(gi, st){
+    var n1 = 0, n2 = 0;
+    st.forEach(function(v){ if(v === 1) n1++; else if(v === 2) n2++; });
+    var h = '<div class="preview-warn prev-dup-warn" data-gi="' + gi + '"' + ((n1 || n2) ? '' : ' hidden') + '>';
+    if(n1) h += '⚠ <b>중복</b>: 같은 종이 같은 곳(좌표가 같거나 없는 줄)에 ' + n1 + '줄 있어요. <button type="button" class="btn btn-ghost btn-small prev-merge" data-gi="' + gi + '">합치기</button> 를 누르면 개체수를 더해 한 줄로 합쳐요. ';
+    if(n2) h += '<br>ℹ <b>다른 좌표</b>: 같은 종이 좌표가 다른 곳에 ' + n2 + '줄 있어요. 따로 기록할 곳이면 그대로 두세요. 한 줄로 합치려면 <button type="button" class="btn btn-ghost btn-small prev-merge" data-gi="' + gi + '" data-all="1">좌표 달라도 모두 합치기</button> ';
+    h += '<br><span class="muted">필요 없는 줄은 ✕로 지울 수 있어요. 저장 시 완전히 똑같은 줄은 자동으로 한 번만 저장됩니다.</span></div>';
+    return h;
   }
 
   function previewRowHtml(g, gi, r, ri, isDup){
@@ -820,7 +850,8 @@
       + '<span class="prev-kr-wrap">'
       + '<input type="text" class="prev-kr" value="' + esc(r.kr) + '">'
       + '<span class="chip chip-amber prev-chip"' + (known ? ' hidden' : '') + '>확인필요</span>'
-      + '<span class="chip chip-bad prev-dup-chip"' + (isDup ? '' : ' hidden') + '>중복</span>'
+      + '<span class="chip chip-bad prev-dup-chip"' + (isDup === 1 ? '' : ' hidden') + '>중복</span>'
+      + '<span class="chip chip-amber prev-diff-chip"' + (isDup === 2 ? '' : ' hidden') + '>다른 좌표</span>'
       + '</span>'
       + '<input type="text" inputmode="numeric" class="prev-count" value="' + (r.count != null ? r.count : '') + '" placeholder="-">'
       + '<input type="text" inputmode="decimal" class="prev-lat" value="' + (r.lat != null ? r.lat : '') + '" placeholder="위도" title="위도">'
@@ -832,13 +863,25 @@
   function updateGroupDupChips(gi){
     var group = state.pastePreview && state.pastePreview.groups[gi];
     if(!group) return;
-    var counts = groupKrCounts(group);
+    var st = groupDupStates(group);
     document.querySelectorAll('.preview-row[data-gi="' + gi + '"]').forEach(function(rowEl){
       var ri = parseInt(rowEl.getAttribute('data-ri'), 10);
       var r = group.records[ri];
       var dupChip = rowEl.querySelector('.prev-dup-chip');
-      if(dupChip && r) dupChip.hidden = !(r.kr && counts[r.kr] > 1);
+      var diffChip = rowEl.querySelector('.prev-diff-chip');
+      if(dupChip && r) dupChip.hidden = st[ri] !== 1;
+      if(diffChip && r) diffChip.hidden = st[ri] !== 2;
     });
+    var w = document.querySelector('.prev-dup-warn[data-gi="' + gi + '"]');
+    var any = st.some(function(v){ return v > 0; });
+    if(w){
+      if(any) w.outerHTML = dupWarnHtml(gi, st);
+      else w.hidden = true;
+    } else if(any){
+      var lastRow = document.querySelector('.preview-row[data-gi="' + gi + '"]:last-of-type');
+      var rows = document.querySelectorAll('.preview-row[data-gi="' + gi + '"]');
+      if(rows.length) rows[rows.length - 1].insertAdjacentHTML('afterend', dupWarnHtml(gi, st));
+    }
   }
 
   function paintFieldNotePreview(parsed, opts){
@@ -855,16 +898,11 @@
       totalRecords += g.records.length;
       html += '<div class="preview-group">';
       html += '<h4>' + esc(g.datetime) + ' · ' + esc(g.place) + ' <span class="muted">(' + g.records.length + '건)</span></h4>';
-      var krCounts = groupKrCounts(g);
-      var dupCount = 0;
+      var st = groupDupStates(g);
       g.records.forEach(function(r, ri){
-        var isDup = !!(r.kr && krCounts[r.kr] > 1);
-        if(isDup) dupCount++;
-        html += previewRowHtml(g, gi, r, ri, isDup);
+        html += previewRowHtml(g, gi, r, ri, st[ri]);
       });
-      if(dupCount > 0){
-        html += '<div class="preview-warn">⚠ 같은 종이 이 날짜·장소 안에 중복해서 ' + dupCount + '줄 있어요. ✕로 지우거나 개체수를 합쳐서 정리해주세요. (저장 시 완전히 똑같은 줄은 자동으로 한 번만 저장됩니다)</div>';
-      }
+      if(st.some(function(v){ return v > 0; })) html += dupWarnHtml(gi, st);
       if(opts.showSummaryWarnings && g.summary){
         var actualSp = new Set(g.records.map(function(r){return r.kr;})).size;
         var warnParts = [];
@@ -916,12 +954,35 @@
     } else if(e.target.classList.contains('prev-lat')){
       var latVal = parseFloat(e.target.value);
       rec.lat = isNaN(latVal) ? null : latVal;
+      updateGroupDupChips(gi);
     } else if(e.target.classList.contains('prev-lng')){
       var lngVal = parseFloat(e.target.value);
       rec.lng = isNaN(lngVal) ? null : lngVal;
+      updateGroupDupChips(gi);
     }
   });
   el('f-preview').addEventListener('click', function(e){
+    var mergeBtn = e.target.closest ? e.target.closest('.prev-merge') : null;
+    if(mergeBtn && state.pastePreview){
+      var mg = state.pastePreview.groups[parseInt(mergeBtn.getAttribute('data-gi'), 10)];
+      if(!mg) return;
+      var mergeAll = mergeBtn.getAttribute('data-all') === '1';
+      var out = [], merged = 0;
+      mg.records.forEach(function(r){
+        var host = null;
+        for(var k = 0; k < out.length; k++){
+          if(out[k].kr && out[k].kr === r.kr && (mergeAll || sameSpot(out[k], r))){ host = out[k]; break; }
+        }
+        if(!host){ out.push(r); return; }
+        if(r.count != null) host.count = (host.count != null ? host.count : 0) + r.count;
+        if((host.lat == null || host.lng == null) && r.lat != null && r.lng != null){ host.lat = r.lat; host.lng = r.lng; }
+        merged++;
+      });
+      mg.records = out;
+      paintFieldNotePreview(state.pastePreview, {showSummaryWarnings: false});
+      toast('✓ ' + merged + '줄을 합쳤어요.', 2400);
+      return;
+    }
     var delBtn = e.target.closest ? e.target.closest('.prev-del') : null;
     if(!delBtn || !state.pastePreview) return;
     var row = delBtn.closest('.preview-row');
