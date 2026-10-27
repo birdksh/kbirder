@@ -138,6 +138,12 @@
   #sp-table-wrap th, #sp-table-wrap td, #photo-table-wrap th, #photo-table-wrap td{ white-space:nowrap !important; word-break:keep-all !important; }
   .row-actions .icon-btn{ width:28px; height:28px; border:none; background:transparent; font-size:13px; }
   .row-actions .icon-btn:hover{ background:var(--bad-soft); color:var(--bad); }
+  #obs-recent-wrap th, #obs-recent-wrap td{ white-space:nowrap; }
+  .recent-memo{ width:190px; border:1px solid var(--line); background:var(--surface-2); color:var(--ink); font:inherit; font-size:13px; padding:5px 7px; border-radius:6px; }
+  .recent-memo:focus{ border-color:var(--accent); outline:none; }
+  .recent-memo:disabled{ opacity:.55; }
+  .recent-memo.saving{ border-color:var(--accent); }
+  .recent-memo.saved{ border-color:var(--good, #3a8f5c); }
 
   .empty-state{ display:flex; flex-direction:column; align-items:center; text-align:center; gap:8px; padding:44px 20px; color:var(--muted); }
   .empty-state .glyph{ font-size:30px; }
@@ -683,12 +689,31 @@
           '<h3>구글시트 연동 설정</h3>' +
           '<p>구글시트에 붙여넣은 Apps Script를 "웹 앱"으로 배포하면 나오는 주소(URL)를 여기 붙여넣으세요. 이 기기에만 저장되고 다른 곳으로 전송되지 않아요.</p>' +
           '<input type="url" id="modal-script-url" placeholder="https://script.google.com/macros/s/xxxx/exec" value="' + esc(state.scriptUrl) + '">' +
+          '<h3 style="margin-top:16px;font-size:14px;">내 음성 사전</h3>' +
+          '<p style="margin-bottom:6px;">음성으로 입력한 종명을 야장에서 고치면 자동으로 쌓여요. 잘못 기억된 것은 ✕로 지우세요.</p>' +
+          '<div id="voice-dict-list"></div>' +
           '<div class="row">' +
             '<button class="btn btn-ghost" id="modal-cancel">취소</button>' +
             '<button class="btn btn-primary" id="modal-save">저장</button>' +
           '</div>' +
         '</div>' +
       '</div>';
+    function paintVoiceDict(){
+      var d = voiceDictGet(), keys = Object.keys(d), box = el('voice-dict-list');
+      if(!box) return;
+      box.innerHTML = keys.length
+        ? keys.map(function(k){
+            return '<div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:13px;"><span style="flex:1;">' + esc(k) + ' → <b>' + esc(d[k]) + '</b></span>' +
+              '<button type="button" class="icon-btn voice-dict-del" data-k="' + esc(k) + '" title="지우기">✕</button></div>';
+          }).join('')
+        : '<div class="muted" style="font-size:13px;">아직 없어요.</div>';
+    }
+    paintVoiceDict();
+    el('voice-dict-list').addEventListener('click', function(e){
+      var b = e.target.closest ? e.target.closest('.voice-dict-del') : null;
+      if(!b) return;
+      var d = voiceDictGet(); delete d[b.getAttribute('data-k')]; voiceDictSet(d); paintVoiceDict();
+    });
     el('modal-cancel').addEventListener('click', closeModal);
     el('modal-back').addEventListener('click', function(e){ if(e.target.id === 'modal-back') closeModal(); });
     el('modal-save').addEventListener('click', function(){
@@ -1797,7 +1822,8 @@
         // 타인관찰 탭/종마스터 배지가 새 기록을 반영하도록 캐시된 목록을 비워서 다음 방문 때 다시 불러오게 한다.
         state.otherObsLoaded = false;
       } else {
-        await loadRecent();
+        // 최근 입력 목록은 기다리지 않고 뒤에서 갱신한다 → 저장 버튼이 바로 돌아온다.
+        loadRecent();
       }
     } catch(err){
       toast('저장에 실패했습니다: ' + (err && err.message ? err.message : err), 4000);
@@ -1829,7 +1855,7 @@
     }
     el('obs-recent-count').textContent = '(구글시트 관찰기록 · 최근 ' + rows.length + '건)';
     var html = '<table><thead><tr>' +
-      '<th>날짜</th><th>국명</th><th>장소</th><th>개체수</th><th>좌표</th><th>상태</th><th></th>' +
+      '<th>날짜</th><th>국명</th><th>장소</th><th>개체수</th><th>좌표</th><th>메모</th><th>상태</th><th></th>' +
       '</tr></thead><tbody>';
     rows.forEach(function(r){
       var dateStr = r.year + '-' + String(r.month).padStart(2,'0') + '-' + String(r.day).padStart(2,'0');
@@ -1843,7 +1869,8 @@
         '<td>' + esc(r.province) + ' ' + esc(r.city) + ' ' + esc(r.place) + '</td>' +
         '<td>' + esc(r.count) + '</td>' +
         '<td>' + coordCell + '</td>' +
-        '<td>' + matchChip(r.memo) + '</td>' +
+        '<td><input type="text" class="recent-memo" data-row="' + (r.rowNumber || '') + '" data-kr="' + esc(r.kr) + '" value="' + esc(r.memo == null ? '' : r.memo) + '" placeholder="' + (r.rowNumber ? '메모 입력' : '구글 코드 업데이트 필요') + '"' + (r.rowNumber ? '' : ' disabled') + '></td>' +
+        '<td class="recent-chip">' + matchChip(r.memo) + '</td>' +
         '<td><div class="row-actions"><button class="icon-btn" data-del="' + r.rowNumber + '" title="삭제">🗑</button></div></td>' +
         '</tr>';
     });
@@ -1873,6 +1900,34 @@
   }
 
   el('obs-refresh-btn').addEventListener('click', loadRecent);
+
+  // 저장된 기록 옆 메모 칸: 입력을 마치면(칸을 벗어나거나 완료를 누르면) 구글시트 L열에 바로 저장한다.
+  el('obs-recent-wrap').addEventListener('change', async function(e){
+    var inp = e.target.closest ? e.target.closest('.recent-memo') : null;
+    if(!inp) return;
+    var rowNumber = parseInt(inp.getAttribute('data-row'), 10);
+    var kr = inp.getAttribute('data-kr');
+    if(!rowNumber) return;
+    var memoVal = inp.value.trim();
+    inp.classList.remove('saved'); inp.classList.add('saving'); inp.disabled = true;
+    try{
+      var res = await callScript({action: 'update_memo', rowNumber: rowNumber, expected: {kr: kr}, memo: memoVal});
+      if(res.error || res.success === false) throw new Error(res.error || '저장 실패');
+      var rr = (state.recentRows || []).find(function(x){ return x.rowNumber === rowNumber; });
+      if(rr) rr.memo = memoVal;
+      var chipTd = inp.closest('tr') && inp.closest('tr').querySelector('.recent-chip');
+      if(chipTd) chipTd.innerHTML = matchChip(memoVal);
+      inp.classList.remove('saving'); inp.classList.add('saved');
+      toast('✓ 메모를 저장했어요.', 1600);
+    }catch(err){
+      inp.classList.remove('saving');
+      var m = (err && err.message) ? err.message : String(err);
+      if(/Unknown action/i.test(m)) m = '구글 Apps Script를 새 코드로 바꾸고 다시 배포해야 메모가 저장돼요.';
+      toast('메모 저장에 실패했습니다: ' + m, 5000);
+    }finally{
+      inp.disabled = false;
+    }
+  });
 
   el('obs-recent-wrap').addEventListener('click', async function(e){
     var delBtn = e.target.closest('[data-del]');
@@ -1965,19 +2020,123 @@
     .filter(function(r){ return r.taxon === 'Species' && r.cat && r.cat.indexOf('가') === 0; })
     .map(function(r){ return r.kr; });
 
+  // ---- 소리가 비슷한 정도로 종명 찾기: 글자를 자음·모음 조각(자모)으로 쪼개서 비교 ----
+  // 음성 인식은 "쇠백로"를 "새백로"처럼 소리만 비슷하게 잘못 알아듣는 일이 많다.
+  // 글자 단위가 아니라 자모 단위로 비교하고, 거의 같은 소리(ㅐ/ㅔ, ㄱ/ㅋ 등)는 덜 다른 것으로 쳐서
+  // 맞는 종을 더 잘 찾는다.
+  var J_CHO = ['ㄱ','ㄲ','ㄴ','ㄷ','ㄸ','ㄹ','ㅁ','ㅂ','ㅃ','ㅅ','ㅆ','ㅇ','ㅈ','ㅉ','ㅊ','ㅋ','ㅌ','ㅍ','ㅎ'];
+  var J_JUNG = ['ㅏ','ㅐ','ㅑ','ㅒ','ㅓ','ㅔ','ㅕ','ㅖ','ㅗ','ㅘ','ㅙ','ㅚ','ㅛ','ㅜ','ㅝ','ㅞ','ㅟ','ㅠ','ㅡ','ㅢ','ㅣ'];
+  var J_JONG = ['','ㄱ','ㄲ','ㄳ','ㄴ','ㄵ','ㄶ','ㄷ','ㄹ','ㄺ','ㄻ','ㄼ','ㄽ','ㄾ','ㄿ','ㅀ','ㅁ','ㅂ','ㅄ','ㅅ','ㅆ','ㅇ','ㅈ','ㅊ','ㅋ','ㅌ','ㅍ','ㅎ'];
+  function toJamo(str){
+    var out = [];
+    String(str || '').replace(/\s+/g, '').split('').forEach(function(ch){
+      var code = ch.charCodeAt(0) - 0xAC00;
+      if(code >= 0 && code < 11172){
+        out.push(J_CHO[Math.floor(code / 588)]);
+        out.push(J_JUNG[Math.floor((code % 588) / 28)]);
+        var jg = J_JONG[code % 28];
+        if(jg) out.push('_' + jg);   // 받침은 앞에 _ 를 붙여 첫소리와 구분
+      } else {
+        out.push(ch);
+      }
+    });
+    return out;
+  }
+  var JAMO_SIM = {};
+  (function(){
+    function addGroup(list, cost){
+      list.forEach(function(a){ list.forEach(function(b){ if(a !== b) JAMO_SIM[a + '|' + b] = cost; }); });
+    }
+    addGroup(['ㅐ','ㅔ','ㅒ','ㅖ','ㅙ','ㅞ','ㅚ'], 0.3);                       // 소리가 거의 같은 모음
+    addGroup(['ㄱ','ㄲ','ㅋ'], 0.5); addGroup(['ㄷ','ㄸ','ㅌ'], 0.5);
+    addGroup(['ㅂ','ㅃ','ㅍ'], 0.5); addGroup(['ㅈ','ㅉ','ㅊ'], 0.5); addGroup(['ㅅ','ㅆ'], 0.5);
+    addGroup(['_ㄱ','_ㄲ','_ㅋ','_ㄳ'], 0.3);                                    // 받침 소리는 서로 비슷
+    addGroup(['_ㄷ','_ㅅ','_ㅆ','_ㅈ','_ㅊ','_ㅌ','_ㅎ'], 0.3);
+    addGroup(['_ㅂ','_ㅍ','_ㅄ'], 0.3);
+  })();
+  function jamoDistance(a, b){
+    var m = a.length, n = b.length;
+    if(!m) return n;
+    if(!n) return m;
+    var prev = [], cur = [], i, j;
+    for(j = 0; j <= n; j++) prev[j] = j;
+    for(i = 1; i <= m; i++){
+      cur[0] = i;
+      for(j = 1; j <= n; j++){
+        var sub = (a[i-1] === b[j-1]) ? 0 : (JAMO_SIM[a[i-1] + '|' + b[j-1]] || 1);
+        cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + sub);
+      }
+      var t = prev; prev = cur; cur = t;
+    }
+    return prev[n];
+  }
+  var ALL_KR_JAMO = {};
+  function krJamo(kr){ return ALL_KR_JAMO[kr] || (ALL_KR_JAMO[kr] = toJamo(kr)); }
+
   function findSpeciesCandidates(text, topN){
     topN = topN || 3;
     var clean = String(text || '').replace(/\s+/g, '').trim();
     if(!clean) return [];
     if(state.speciesByKr[clean]) return [{kr: clean, dist: 0}];
+    var q = toJamo(clean);
     var scored = ALL_KR_NAMES.map(function(kr){
-      var k = kr.replace(/\s+/g,'');
-      var dist = levenshtein(clean, k);
-      var lenDiff = Math.abs(clean.length - k.length);
-      return {kr: kr, dist: dist + lenDiff * 0.3};
+      return {kr: kr, dist: jamoDistance(q, krJamo(kr))};
     });
     scored.sort(function(a,b){ return a.dist - b.dist; });
     return scored.slice(0, topN);
+  }
+
+  // ---- 내 음성 사전: 자주 잘못 알아듣는 말 → 맞는 종명 (야장에서 고치면 자동으로 쌓임) ----
+  var VOICE_DICT_KEY = 'kbirder_voice_dict_v1';
+  function voiceKey(t){ return String(t || '').replace(/\s+/g, ''); }
+  function voiceDictGet(){
+    try{ return JSON.parse(localStorage.getItem(VOICE_DICT_KEY) || '{}') || {}; }catch(e){ return {}; }
+  }
+  function voiceDictSet(d){ try{ localStorage.setItem(VOICE_DICT_KEY, JSON.stringify(d)); }catch(e){} }
+  function voiceDictFix(kr){
+    var d = voiceDictGet(), k = voiceKey(kr);
+    return Object.prototype.hasOwnProperty.call(d, k) ? d[k] : k;
+  }
+  function voiceDictLearn(heard, fixed){
+    var h = voiceKey(heard), f = voiceKey(fixed);
+    if(!h || !f || h === f) return false;
+    if(state.speciesByKr[h]) return false;      // 들린 말 자체가 정식 종명이면(다른 종으로 바꾼 것) 사전에 넣지 않음
+    if(!state.speciesByKr[f]) return false;     // 고친 결과가 정식 종명일 때만 기억
+    var d = voiceDictGet(); d[h] = f; voiceDictSet(d);
+    return true;
+  }
+
+  // 인식 결과 후보(최대 5개) 중에서 종 목록과 가장 잘 맞는 것을 고른다.
+  function pickBestVoice(alts){
+    var list = [];
+    (alts || []).forEach(function(t){
+      var p = parseVoiceToSpeciesCount(t);
+      if(p.kr) list.push({kr: voiceKey(p.kr), count: p.count});
+    });
+    if(!list.length) return null;
+    var top = list[0];
+    var anyCount = null;
+    for(var c = 0; c < list.length; c++){ if(list[c].count != null){ anyCount = list[c].count; break; } }
+    function pickCount(a){ return a.count != null ? a.count : (top.count != null ? top.count : anyCount); }
+
+    // 1순위: 내 사전에 있거나 종 목록과 정확히 같은 후보 (앞에 있는 후보부터)
+    for(var i = 0; i < list.length; i++){
+      var fixed = voiceDictFix(list[i].kr);
+      if(matchSpecies(fixed)){
+        return {kr: fixed, count: pickCount(list[i]), matched: true, candidates: [], heard: top.kr, viaAlt: i > 0};
+      }
+    }
+    // 2순위: 소리가 가장 비슷한 종 (모든 후보를 통틀어 가장 가까운 것)
+    var best = null, merged = {};
+    list.forEach(function(a){
+      findSpeciesCandidates(a.kr, 3).forEach(function(cd){
+        if(!(cd.kr in merged) || cd.dist < merged[cd.kr]) merged[cd.kr] = cd.dist;
+        if(!best || cd.dist < best.dist) best = {kr: cd.kr, dist: cd.dist, alt: a};
+      });
+    });
+    if(!best) return {kr: top.kr, count: pickCount(top), matched: false, candidates: [], heard: top.kr};
+    var names = Object.keys(merged).sort(function(x, y){ return merged[x] - merged[y]; }).slice(0, 3);
+    return {kr: best.kr, count: pickCount(best.alt), matched: best.dist <= 1.0, candidates: names, heard: top.kr};
   }
 
   var KOREAN_NUM_WORDS = {
@@ -2027,7 +2186,7 @@
     quickRecognition = new SpeechRec();
     quickRecognition.lang = 'ko-KR';
     quickRecognition.interimResults = true;
-    quickRecognition.maxAlternatives = 1;
+    quickRecognition.maxAlternatives = 5;   // 후보를 5개까지 받아서 종 목록과 가장 잘 맞는 것을 고른다
   } else {
     var unsupEl = el('quick-unsupported');
     if(unsupEl) unsupEl.hidden = false;
@@ -2065,12 +2224,21 @@
       matched: false, candidates: []
     };
 
+    var altsFinal = null;
     quickRecognition.onresult = function(event){
       var text = '';
       for(var i=event.resultIndex;i<event.results.length;i++){
         text += event.results[i][0].transcript;
       }
       heardEl.textContent = '"' + text + '"';
+      // 말이 한 덩어리로 확정되면 인식 후보들을 모두 챙겨 둔다.
+      var lastRes = event.results[event.results.length - 1];
+      if(event.results.length === 1 && lastRes && lastRes.isFinal && lastRes.length > 0){
+        altsFinal = [];
+        for(var k = 0; k < lastRes.length; k++) altsFinal.push(lastRes[k].transcript);
+      } else {
+        altsFinal = null;
+      }
     };
 
     quickRecognition.onerror = function(e){
@@ -2081,16 +2249,16 @@
     quickRecognition.onend = function(){
       var finalText = heardEl.textContent.replace(/^"|"$/g,'');
       if(finalText){
-        var parsed = parseVoiceToSpeciesCount(finalText);
-        pendingRow.kr = parsed.kr;
-        pendingRow.count = parsed.count;
-        var candidates = findSpeciesCandidates(parsed.kr, 3);
-        pendingRow.matched = candidates.length > 0 && candidates[0].dist === 0;
-        if(!pendingRow.matched){
-          pendingRow.kr = candidates.length ? candidates[0].kr : parsed.kr;
-          pendingRow.matched = candidates.length > 0 && candidates[0].dist <= 1;
-          pendingRow.candidates = candidates.slice(0,3).map(function(c){return c.kr;});
+        var pick = pickBestVoice((altsFinal && altsFinal.length) ? altsFinal : [finalText]);
+        if(!pick){
+          var parsed = parseVoiceToSpeciesCount(finalText);
+          pick = {kr: parsed.kr, count: parsed.count, matched: false, candidates: [], heard: parsed.kr};
         }
+        pendingRow.kr = pick.kr;
+        pendingRow.count = pick.count;
+        pendingRow.matched = pick.matched;
+        pendingRow.candidates = pick.candidates;
+        pendingRow.heard = pick.heard;
         state.quick.rows.unshift(pendingRow);
         renderQuickList();
       }
@@ -2176,7 +2344,7 @@
       var countVal = (r.count != null) ? r.count : '';
       html += '<div class="quick-row" data-id="' + r.id + '">' +
         '<span class="qr-idx">' + (state.quick.rows.length - idx) + '</span>' +
-        '<input type="text" class="qr-kr' + (r.matched ? '' : ' unmatched') + '" value="' + esc(r.kr) + '" data-id="' + r.id + '">' +
+        '<input type="text" class="qr-kr' + (r.matched ? '' : ' unmatched') + '" value="' + esc(r.kr) + '" data-id="' + r.id + '"' + ((r.heard && r.heard !== r.kr) ? ' title="들린 말: ' + esc(r.heard) + '"' : '') + '>' +
         '<input type="text" inputmode="numeric" class="qr-count" value="' + esc(countVal) + '" placeholder="X" data-id="' + r.id + '">' +
         '<span class="qr-time">' + esc(r.time) + '</span>' +
         '<span class="qr-coord" title="' + esc(quickRowCoordText(r)) + '">' + esc(quickRowCoordText(r)) + '</span>' +
@@ -2212,6 +2380,19 @@
     }
   });
 
+  // 종명을 직접 고쳤으면(칸을 벗어날 때) 잘못 알아들은 말 → 맞는 이름으로 사전에 기억한다.
+  el('quick-list') && el('quick-list').addEventListener('change', function(e){
+    if(!e.target.classList || !e.target.classList.contains('qr-kr')) return;
+    var id = e.target.getAttribute('data-id');
+    var row = state.quick.rows.find(function(r){ return r.id === id; });
+    if(!row || !row.heard) return;
+    if(voiceDictLearn(row.heard, row.kr)){
+      toast('기억했어요: "' + row.heard + '" → "' + row.kr + '" (다음부터 자동으로 바뀌어요)', 3600);
+      row.heard = null;
+      quickSave();
+    }
+  });
+
   el('quick-list') && el('quick-list').addEventListener('click', function(e){
     var delBtn = e.target.closest('.qr-del');
     if(delBtn){
@@ -2226,6 +2407,10 @@
       var kr2 = candBtn.getAttribute('data-cand');
       var row2 = state.quick.rows.find(function(r){ return r.id === id2; });
       if(row2){
+        if(row2.heard && voiceDictLearn(row2.heard, kr2)){
+          toast('기억했어요: "' + row2.heard + '" → "' + kr2 + '" (다음부터 자동으로 바뀌어요)', 3600);
+          row2.heard = null;
+        }
         row2.kr = kr2;
         row2.matched = true;
         row2.candidates = [];
@@ -2648,7 +2833,7 @@
       ebDoneAdd(sel.map(function(c){ return c.id; }));
       state.eb.lists = state.eb.lists.filter(function(c){ return sel.indexOf(c) < 0; });
       toast('✓ ' + added + '건 저장했습니다.' + (skipped ? ' (똑같은 중복 ' + skipped + '건은 건너뛰었어요)' : ''), 4200);
-      await loadRecent();
+      loadRecent();
       ebMarkTags();
       renderEb();
     }catch(err){
